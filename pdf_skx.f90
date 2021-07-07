@@ -1,4 +1,4 @@
-module pdf
+module pdf_skx
 
   implicit none
 
@@ -120,18 +120,22 @@ module pdf
 
   elemental subroutine x_closure &
     ( &
-    xm, xp2, wp2, wpxp, uf, sig_w_sqd, w_1_n, w_2_n, &                 ! in
+    xm, xp2, xp3, &                                                    ! in
+    skw, wp2, wpxp, uf, sig_w_sqd, w_1_n, w_2_n, &                     ! in
     width_fac_1, width_fac_2, tol, zero_threshold, &                   ! in
-    x_1, x_2, var_x_1, var_x_2, alpha_x, xp2_clipped &                 ! out
+    x_1, x_2, var_x_1, var_x_2, alpha_x, &                             ! out
+    xp2_clipped, xp3_clipped &                                         ! out
     )
     implicit none
 
     intrinsic :: min, max, sqrt
     real(kind=8), intent(in) :: &
-      xm, xp2, wp2, wpxp, uf, sig_w_sqd, w_1_n, w_2_n, &
+      xm, xp2, xp3, &
+      skw, wp2, wpxp, uf, sig_w_sqd, w_1_n, w_2_n, &
       width_fac_1, width_fac_2, tol, zero_threshold
     real(kind=8), intent(out) :: x_1, x_2, var_x_1, var_x_2, alpha_x, &
-                                 xp2_clipped
+                                 xp2_clipped, xp3_clipped
+    real(kind=8) :: skw_hat, cwx_hat, delta_x, skx
 
     if (xp2 <= tol**2) then
       x_1 = xm
@@ -142,13 +146,48 @@ module pdf
     else
       x_1 = xm - (wpxp/sqrt(wp2))/w_2_n
       x_2 = xm - (wpxp/sqrt(wp2))/w_1_n
-      alpha_x = 0.5*(1.0-wpxp*wpxp/((1.0-sig_w_sqd)*wp2*xp2))
-      alpha_x = max(min(alpha_x, 1.0), zero_threshold)
-      var_x_1 = (alpha_x/uf)*width_fac_1*xp2
-      var_x_2 = (alpha_x/(1.0-uf))*width_fac_2*xp2
+      ! --- calculate x variances using the skx ansatz
+      ! alpha_x = 0.5*(1.0-wpxp*wpxp/((1.0-sig_w_sqd)*wp2*xp2))
+      ! alpha_x = max(min(alpha_x, 1.0), zero_threshold)
+      ! var_x_1 = (alpha_x/uf)*width_fac_1*xp2
+      ! var_x_2 = (alpha_x/(1.0-uf))*width_fac_2*xp2
+      ! --- using input skx
+      skw_hat = skw/sqrt((1.0-sig_w_sqd)**3)
+      cwx_hat = wpxp/sqrt((1.0-sig_w_sqd)*wp2*xp2)
+      delta_x = cwx_hat*sqrt(xp2/uf/(1.0-uf))
+      skx = xp3/sqrt(xp2**3)
+      var_x_1 = (1.0 - cwx_hat*cwx_hat) &
+                + sqrt((1.0-uf)/uf) &
+                  * (skx - (cwx_hat**3)*skw_hat) &
+                  / (3.0*cwx_hat)
+      var_x_2 = (1.0 - cwx_hat*cwx_hat) &
+                - sqrt(uf/(1.0-uf)) &
+                  * (skx - (cwx_hat**3)*skw_hat) &
+                  / (3.0*cwx_hat)
+      ! --- Clip var_x_i so that
+      ! ---   1) the negative one becomes zero;
+      ! ---   2) the total variance of x (xp2) stays unchanged.
+      ! --- This alters xp3 and skx though.
+      var_x_1 = max(min(var_x_1, (1.0-cwx_hat**2)/uf), 0.0)*xp2
+      var_x_2 = max(min(var_x_2, (1.0-cwx_hat**2)/(1.0-uf)), 0.0)*xp2
+      ! --- Clip var_x_i so that the negative one becomes zero.
+      ! --- This alters skx as well, but does not alter xp3
+      ! --- as much as the previous method.
+      ! --- This method does not preserve the total variance of x,
+      ! --- which means that the solution would not be self-consistent.
+      ! --- For example, the cwx used in calculating uf is different from the
+      ! --- actual cwx after the change in the total variance of x.
+      ! var_x_1 = max(var_x_1, 0.0)*xp2
+      ! var_x_2 = max(var_x_2, 0.0)*xp2
+      ! --- Re-calculate xp2 and skx after clipping
+      ! --- With the default clipping algorithm, the total variance shouldn't
+      ! --- change.
+      xp2_clipped = uf*var_x_1 + (1.0-uf)*var_x_2 &
+                    + uf*(1.0-uf)*((x_1-x_2)**2)
+      xp3_clipped = uf*(1.0-uf)*(1.0-2.0*uf)*((x_1-x_2)**3) &
+                    + 3.0*uf*(1.0-uf)*(x_1-x_2)*(var_x_1-var_x_2)
     end if
-    xp2_clipped = uf*(1.0-uf)*(x_1-x_2)*(x_1-x_2) &
-                  + uf*var_x_1 + (1.0-uf)*var_x_2
+
     return
   end subroutine x_closure
 
@@ -186,12 +225,14 @@ module pdf
 
   elemental subroutine pdf_closure &
     ( &
+    beta, gamma, &                                                      ! in
     wp2, wp3, rtp2, thlp2, rtpthlp, &                                   ! in
-    wprtp, wpthlp, thlm, rtm, p, &                                      ! in
+    wprtp, wpthlp, thlm, rtm, rtp3, thlp3, p, &                         ! in
     wp4, wp2rtp, wprtp2, wp2thlp, wpthlp2, wprtpthlp, &                 ! out
     wp2rcp, wp2thvp, wprcp, wpthvp, &                                   ! out
     rtprcp, rtpthvp, thlprcp, thlpthvp, rcp2, &                         ! out
-    rtp2_clipped, thlp2_clipped, rtpthlp_clipped, &                     ! out
+    rtp2_clipped, rtp3_clipped, thlp2_clipped, thlp3_clipped, &         ! out
+    rtpthlp_clipped, &                                                  ! out
     uf, w_1, w_2, var_w_1, var_w_2, &                                   ! out
     w_1_n, w_2_n, sig_w_sqd, &                                          ! out
     rt_1, rt_2, var_rt_1, var_rt_2, &                                   ! out
@@ -211,14 +252,17 @@ module pdf
 
     intrinsic :: max, min, sqrt
 
-    real(kind=8), intent(in) :: wp2, wp3, rtp2, thlp2, rtpthlp, &
-                                wprtp, wpthlp,  thlm, rtm, p
+    real(kind=8), intent(in) :: &
+      beta, gamma, &
+      wp2, wp3, rtp2, thlp2, rtpthlp, &
+      wprtp, wpthlp, thlm, rtm, rtp3, thlp3, p
 
     real(kind=8), intent(out) :: &
       wp4, wp2rtp, wprtp2, wp2thlp, wpthlp2, wprtpthlp, &
       wp2rcp, wp2thvp, wprcp, wpthvp, &
       rtprcp, rtpthvp, thlprcp, thlpthvp, rcp2, &
-      rtp2_clipped, thlp2_clipped, rtpthlp_clipped, &
+      rtp2_clipped, rtp3_clipped, thlp2_clipped, thlp3_clipped, &
+      rtpthlp_clipped, &
       uf, w_1, w_2, var_w_1, var_w_2, &
       w_1_n, w_2_n, sig_w_sqd, &
       rt_1, rt_2, var_rt_1, var_rt_2, &
@@ -243,6 +287,8 @@ module pdf
     ! differences (1.0e-17) between rtp2 and rtp2_clipped.
     ! I tried decreasing w_tol and rt_tol but cannot eliminate the
     ! small differences.
+    ! I also tried compiling (gfortran) with the -fdefault-real-8 flag,
+    ! which didn't change things much.
     ! ---
     real(kind=8), parameter :: w_tol = 2.0e-2, &
                                thl_tol = 1.0e-2, &
@@ -259,12 +305,7 @@ module pdf
                                ep2 = 1.0/ep, &
                                T_freeze_K = 273.15, &
                                chi_at_liq_sat = 0.0, &
-                               skw_max = 4.5, &
-                              !  beta = 1.0, &
-                              !  gamma = 0.25
-                               beta = 2.4, &
-                               gamma = 0.32
-                              !  gamma = 0.64
+                               skw_max = 4.5
 
     real(kind=8) :: exner, thv_ds, skw, width_fac_1, width_fac_2, &
                     tl1, tl2, beta1, beta2, &
@@ -277,12 +318,12 @@ module pdf
     exner = (p*1.0e-5)**(r_d/c_p)
     uf_max = 1.0-0.5*(1.0-(skw_max/sqrt(4.0*(1.0-0.4)**3+skw_max**2)))
 
-    ! ansatz for normalized subplume w variance
+    ! --- ansatz for normalized subplume w variance
     sig_w_sqd = max((wpthlp/(sqrt(wp2*thlp2)+0.01*w_tol*thl_tol))**2, &
                     (wprtp/(sqrt(wp2*rtp2)+0.01*w_tol*rt_tol))**2)
     sig_w_sqd = gamma*(1.0-min(sig_w_sqd, 1.0))
 
-    ! PDF closure for w, theta_l and r_t
+    ! --- PDF closure for w, theta_l and r_t
     if (wp2 <= w_tol*w_tol) then
       uf = 0.5
       w_1 = 0.0
@@ -306,12 +347,16 @@ module pdf
                      uf, w_1, w_2, w_1_n, w_2_n, var_w_1, var_w_2)
       width_fac_1 = (2.0/3.0)*beta + 2.0*uf*(1.0-(2.0/3.0)*beta)
       width_fac_2 = 2.0 - width_fac_1
-      call x_closure(thlm, thlp2, wp2, wpthlp, uf, sig_w_sqd, w_1_n, w_2_n, &
+      call x_closure(thlm, thlp2, thlp3, &
+                     skw, wp2, wpthlp, uf, sig_w_sqd, w_1_n, w_2_n, &
                      width_fac_1, width_fac_2, thl_tol, zero_threshold, &
-                     thl_1, thl_2, var_thl_1, var_thl_2, alpha_thl, thlp2_clipped)
-      call x_closure(rtm, rtp2, wp2, wprtp, uf, sig_w_sqd, w_1_n, w_2_n, &
+                     thl_1, thl_2, var_thl_1, var_thl_2, alpha_thl, &
+                     thlp2_clipped, thlp3_clipped)
+      call x_closure(rtm, rtp2, rtp3, &
+                     skw, wp2, wprtp, uf, sig_w_sqd, w_1_n, w_2_n, &
                      width_fac_1, width_fac_2, rt_tol, zero_threshold, &
-                     rt_1, rt_2, var_rt_1, var_rt_2, alpha_rt, rtp2_clipped)
+                     rt_1, rt_2, var_rt_1, var_rt_2, alpha_rt, &
+                     rtp2_clipped, rtp3_clipped)
       if ((var_rt_1*var_thl_1 > 0.0) .or. (var_rt_2*var_thl_2 > 0.0)) then
         rrtthl = (rtpthlp - uf*(rt_1-rtm)*(thl_1-thlm) &
                   - (1.0-uf)*(rt_2-rtm)*(thl_2-thlm)) &
@@ -327,7 +372,7 @@ module pdf
                                   + (1.0-uf)*sqrt(var_rt_2*var_thl_2))
     end if
 
-    ! first batch of parameterized HOMs
+    ! --- first batch of parameterized HOMs
     wp2rtp = uf*(w_1**2+var_w_1)*(rt_1-rtm) &
              + (1.0-uf)*(w_2**2+var_w_2)*(rt_2-rtm)
     wp2thlp = uf*(w_1**2+var_w_1)*(thl_1-thlm) &
@@ -343,7 +388,7 @@ module pdf
                 + (1.0-uf)*w_2*((rt_2-rtm)*(thl_2-thlm) &
                                 + rrtthl*sqrt(var_rt_2*var_thl_2))
 
-    ! PDF closure for potential supersaturation
+    ! --- PDF closure for potential supersaturation
     tl1 = thl_1*exner
     tl2 = thl_2*exner
     rsatl_1 = sat_mixrat_liq(tl1, p, ep, T_freeze_K)
@@ -393,7 +438,7 @@ module pdf
       corr_chi_eta_2 = 0.0
     end if
 
-    ! cloud water and cloud fraction for each plume
+    ! --- cloud water and cloud fraction for each plume
     call calc_cf_comp(chi_1, stdev_chi_1, chi_tol, &
                       chi_at_liq_sat, cf1, rc_1)
     call calc_cf_comp(chi_2, stdev_chi_2, chi_tol, &
@@ -401,7 +446,7 @@ module pdf
     cf = min(1.0, max(zero_threshold, uf*cf1+(1.0-uf)*cf2))
     rcm = max(uf*rc_1+(1.0-uf)*rc_2, zero_threshold)
 
-    ! cloud ice and ice supersaturation for each plume
+    ! --- cloud ice and ice supersaturation for each plume
     cf1i = 0.0
     rc_1i = 0.0
     cf2i = 0.0
@@ -429,14 +474,14 @@ module pdf
       rcmi = max(uf*rc_1i+(1.0-uf)*rc_2i, zero_threshold)
     end if
 
-    ! hydrometeor loading for buoyancy term calculation
+    ! --- hydrometeor loading for buoyancy term calculation
     wprxp = 0.0
     wp2rxp = 0.0
     thlprxp = 0.0
     rtprxp = 0.0
 
-    ! second batch of HOMs involving cloud water
-    ! and virtual potential temperature
+    ! --- second batch of HOMs involving cloud water
+    ! --- and virtual potential temperature
     rc_coef = l_v/(exner*c_p) - ep2*thv_ds
     wp2rcp = uf*((w_1**2)+var_w_1)*rc_1 &
              + (1.0-uf)*((w_2**2)+var_w_2)*rc_2 &
@@ -450,6 +495,7 @@ module pdf
               + (1.0-uf)*((thl_2-thlm)*rc_2 &
                           + cf2*(rrtthl*crt_2*sqrt(var_rt_2*var_thl_2)&
                                  - cthl_2*var_thl_2))
+    ! --- Should we use rtpthlp or rtpthlp_clipped?
     thlpthvp = thlp2 + ep1*thv_ds*rtpthlp +rc_coef*thlprcp - thv_ds*thlprxp
     rtprcp = uf*((rt_1-rtm)*rc_1 &
                  + cf1*(crt_1*var_rt_1 &
@@ -457,10 +503,11 @@ module pdf
              + (1.0-uf)*((rt_2-rtm)*rc_2 &
                          + cf2*(crt_2*var_rt_2 &
                                 - rrtthl*cthl_2*sqrt(var_rt_2*var_thl_2)))
+    ! --- Should we use rtpthlp or rtpthlp_clipped?
     rtpthvp = rtpthlp + ep1*thv_ds*rtp2 + rc_coef*rtprcp - thv_ds*rtprxp
     rcp2 = max(uf*(chi_1*rc_1+cf1*(stdev_chi_1**2)) &
                + (1.0-uf)*(chi_2*rc_2+cf2*(stdev_chi_2**2)) - rcm**2, &
                zero_threshold)
     return
   end subroutine pdf_closure
-end module pdf
+end module pdf_skx
