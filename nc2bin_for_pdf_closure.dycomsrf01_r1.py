@@ -10,7 +10,7 @@ used to produce input to CLUBB for the input_* experiments.
 -03/01/2019
 '''
 
-sam = xr.open_dataset('bomex_r3_i.nc')
+sam = xr.open_dataset('dycomsrf01_r1_i.nc')
 
 t1, t2 = 0, 360
 
@@ -27,9 +27,9 @@ rtpthlp = sam.QTOTHEL.T[0,0,:,t1:t2]*1.0e-3
 # thlp3 = sam.THEL3.T[0,0,:,t1:t2]
 pressure = sam.PRES.T[0,0,:,t1:t2]*1.0e2
 
-f = FortranFile('input_bomex_r3.bin', 'w')
+f = FortranFile('input_dycomsrf01_r1.bin', 'w')
 # for var in [rtm, thlm, wp2, wp3, wprtp, wpthlp,
-            # rtp2, thlp2, rtpthlp, rtp3, thlp3, pressure]:
+#             rtp2, thlp2, rtpthlp, rtp3, thlp3, pressure]:
 for var in [rtm, thlm, wp2, wp3, wprtp, wpthlp,
             rtp2, thlp2, rtpthlp, pressure]:
     f.write_record(var.values.T.astype(np.float64))
